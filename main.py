@@ -13,13 +13,37 @@ if not TOKEN:
 # Создание объекта бота
 bot = telebot.TeleBot(TOKEN)
 
+# Информация о боте
+BOT_INFO = {
+    "version": "1",
+    "author": "Базлов Владимир Андреевич",
+    "purpose": "Обучение созданию телеграм бота"
+}
+
 @bot.message_handler(commands=["start"])
 def start(message):
     bot.reply_to(message, "Привет! Я твой первый бот! Напиши /help")
 
 @bot.message_handler(commands=["help"])
 def help_cmd(message):
-    bot.reply_to(message, "/start — начать\n/help — помощь")
+    help_text = """
+Доступные команды:
+/start - начать работу с ботом
+/help - показать справку по командам
+/about - информация о боте
+"""
+    bot.reply_to(message, help_text)
+
+@bot.message_handler(commands=["about"])
+def about(message):
+    about_text = f"""
+ Информация о боте:
+
+Версия: {BOT_INFO['version']}
+Автор: {BOT_INFO['author']}
+Назначение: {BOT_INFO['purpose']}
+"""
+    bot.reply_to(message, about_text)
 
 if __name__ == "__main__":
     print("Бот запускается...")
