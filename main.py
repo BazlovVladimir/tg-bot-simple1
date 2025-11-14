@@ -1,5 +1,6 @@
 import os
 import logging
+import random
 from datetime import datetime
 from dotenv import load_dotenv
 from typing import List
@@ -8,7 +9,7 @@ from telebot import types
 import time
 import requests
 import sqlite3
-from db import init_db
+from db import init_db, get_user_character, list_characters, set_user_character, get_character_by_id
 from openrouter_client import OpenRouterClient, OpenRouterError
 
 load_dotenv()
@@ -60,40 +61,63 @@ except RuntimeError as e:
 def _setup_bot_commands() -> None:
     """Регистрирует команды в меню клиента Telegram (удобно для новичков)."""
     cmds = [
-        types.BotCommand(command="start", description="🚀 Приветствие и справка"),
-        types.BotCommand(command="note_add", description="📝 Добавить новую заметку"),
-        types.BotCommand(command="note_list", description="📋 Показать мои заметки"),
-        types.BotCommand(command="note_find", description="🔍 Найти заметки по тексту"),
-        types.BotCommand(command="note_edit", description="✏️ Изменить существующую заметку"),
-        types.BotCommand(command="note_del", description="🗑️ Удалить заметку"),
-        types.BotCommand(command="note_count", description="📊 Количество заметок"),
-        types.BotCommand(command="note_export", description="💾 Экспорт заметок в файл"),
-        types.BotCommand(command="note_stats", description="📈 Статистика заметок"),
-        types.BotCommand(command="model", description="🤖 Выбрать активную модель"),
-        types.BotCommand(command="models", description="📚 Список доступных моделей"),
-        types.BotCommand(command="ask", description="💬 Задать вопрос AI-модели"),
-        types.BotCommand(command="sum", description="➕ Вычислить сумму чисел"),
-        types.BotCommand(command="max", description="📈 Найти максимальное число"),
-        types.BotCommand(command="weather", description="🌤️ Погода в Москве"),
-        types.BotCommand(command="about", description="ℹ️ Информация о боте"),
-        types.BotCommand(command="ping", description="⚡ Проверить скорость ответа"),
-        types.BotCommand(command="hide", description="⌨️ Скрыть клавиатуру"),
+        types.BotCommand(command="start", description="Приветствие и помощь"),
+        types.BotCommand(command="note_add", description="Добавить заметку"),
+        types.BotCommand(command="note_list", description="Список заметок"),
+        types.BotCommand(command="note_find", description="Поиск заметок"),
+        types.BotCommand(command="note_edit", description="Изменить заметку"),
+        types.BotCommand(command="note_del", description="Удалить заметку"),
+        types.BotCommand(command="note_count", description="Сколько заметок"),
+        types.BotCommand(command="note_export", description="Экспорт заметок в .txt"),
+        types.BotCommand(command="note_stats", description="Статистика по датам"),
+        types.BotCommand(command="model", description="Установить активную модель"),
+        types.BotCommand(command="models", description="Получить список моделей"),
+        types.BotCommand(command="ask", description="Задать вопрос модели"),
+        types.BotCommand(command="ask_random", description="Задать вопрос случайной модели"),
+        types.BotCommand(command="character", description="Установить активного персонажа"),
+        types.BotCommand(command="characters", description="Получить список персонажей"),
+        types.BotCommand(command="whoami", description="Получить активную модель и активного персонажа"),
     ]
     bot.set_my_commands(cmds)
 
 
-def _build_messages(user_id: int, user_text: str) -> List[dict]:
-    """Строит список сообщений для запроса к модели"""
+def update_character_name(character_id: int, new_name: str) -> bool:
+    """Обновляет имя персонажа в базе данных"""
+    try:
+        conn = sqlite3.connect('characters.db')
+        cursor = conn.cursor()
+        cursor.execute('UPDATE characters SET name = ? WHERE id = ?', (new_name, character_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logging.error(f"Ошибка при обновлении имени персонажа: {e}")
+        return False
+
+
+def _build_messages_for_character(character: dict, user_text: str) -> List[dict]:
+    """Строит список сообщений для запроса к модели для конкретного персонажа"""
     system = (
-        f"Ты отвечаешь кратко и по-существу.\n"
+        f"Ты отвечаешь строго в образе персонажа: {character['name']}.\n"
+        f"{character['prompt']}\n"
         "Правила:\n"
-        "1) Технические ответы давай корректно и по пунктам.\n"
+        "1) Всегда держи стиль и манеру речи выбранного персонажа. При необходимости – переформулируй.\n"
+        "2) Технические ответы давай корректно и по пунктам, но в характерной манере.\n"
+        "3) Не раскрывай, что ты 'играешь роль'.\n"
+        "4) Не используй длинные дословные цитаты из фильмов/книг (>10 слов).\n"
+        "5) Если стиль персонажа выражен слабо – переформулируй ответ и усили характер персонажа, сохраняя фактическую точность.\n"
     )
 
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user_text},
     ]
+
+
+def _build_messages(user_id: int, user_text: str) -> List[dict]:
+    """Строит список сообщений для запроса к модели"""
+    p = get_user_character(user_id)
+    return _build_messages_for_character(p, user_text)
 
 
 def chat_once(messages: List[dict], model: str, temperature: float = 0.2, max_tokens: int = 400) -> tuple:
@@ -142,6 +166,14 @@ def set_active_model(model_id: int):
             return model
 
     raise ValueError("Модель с таким ID не найдена")
+
+
+def get_model_by_id(model_id: int):
+    """Получает модель по ID"""
+    for model in MODELS_DATA:
+        if model['id'] == model_id:
+            return model
+    return None
 
 
 def fetch_weather_moscow_open_meteo() -> str:
@@ -214,39 +246,90 @@ def make_main_kb():
     return kb
 
 
-@bot.message_handler(commands=["start", "help"])
+@bot.message_handler(commands=['start', 'help'])
 def cmd_start(message: types.Message) -> None:
     """Приветствует пользователя и кратко описать команды."""
     log_message(message, "/start" if message.text.startswith("/start") else "/help")
 
     text = (
-        "Привет! Это умный бот с функциями заметок и AI-ассистента.\n\n"
-        "📝 **Команды для заметок:**\n"
-        " /note_add <текст> - добавить новую заметку\n"
-        " /note_list [N] - показать последние N заметок (или все)\n"
-        " /note_find <подстрока> - найти заметки по тексту\n"
-        " /note_edit <id> <текст> - изменить существующую заметку\n"
-        " /note_del <id> - удалить заметку по ID\n"
-        " /note_count - посчитать количество заметок\n"
-        " /note_export - экспортировать все заметки в файл\n"
-        " /note_stats [days] - статистика заметок за период\n\n"
-        "🤖 **Команды для AI-моделей:**\n"
-        " /models - показать список доступных моделей\n"
-        " /model <id> - выбрать активную модель по ID\n"
-        " /ask <вопрос> - задать вопрос выбранной модели\n\n"
-        "🔧 **Другие команды:**\n"
-        " /sum <числа> - вычислить сумму чисел\n"
-        " /max <числа> - найти максимальное число\n"
-        " /weather - узнать погоду в Москве\n"
-        " /about - информация о боте\n"
-        " /ping - проверить скорость ответа\n"
-        " /hide - скрыть клавиатуру\n"
+        "Привет! Это заметочник на SQLite.\n\n"
+        "Команды:\n"
+  " /start - Приветствие и помощь\n"
+        " /note_add - Добавить заметку\n"
+        " /note_list - Список заметок\n"
+        " /note_find - Поиск заметок\n"
+        " /note_edit - Изменить заметку\n"
+        " /note_del - Удалить заметку\n"
+        " /note_count - Сколько заметок\n"
+        " /note_export - Экспорт заметок в .txt\n"
+        " /note_stats - Статистика по датам\n"
+        " /model - Установить активную модель\n"
+        " /models - Получить список моделей\n"
+        " /ask - Задать вопрос модели\n"
+        " /ask_random - Задать вопрос случайной модели\n"
+        " /character - Установить активного персонажа\n"
+        " /characters - Получить список персонажей\n"
+        " /character - поменять имя персонажа\n"
+        " /whoami - Получить активную модель и активного персонажа\n"
     )
 
-    if message.text.startswith("/start"):
-        bot.reply_to(message, text, reply_markup=make_main_kb(), parse_mode='Markdown')
-    else:
-        bot.reply_to(message, text, parse_mode='Markdown')
+    bot.reply_to(message, text)
+
+
+@bot.message_handler(commands=["character_name"])
+def cmd_character_name(message: types.Message) -> None:
+    """Изменить имя персонажа по ID"""
+    log_message(message, "/character_name")
+
+    # Извлекаем аргументы команды
+    args = message.text.replace('/character_name', '', 1).strip()
+
+    if not args:
+        bot.reply_to(message, "Использование: /character_name <ID> >новое_имя>\n\nПример: /character_name 1 >Новое имя")
+        return
+
+    # Разделяем ID и новое имя по символу >
+    parts = args.split('>', 1)
+    if len(parts) < 2:
+        bot.reply_to(message,
+                     "Использование: /character_name <ID> >новое_имя>\n\nНе забудьте символ '>' перед новым именем")
+        return
+
+    id_part = parts[0].strip()
+    new_name = parts[1].strip()
+
+    if not id_part.isdigit():
+        bot.reply_to(message, "ID должен быть числом. Использование: /character_name <ID> >новое_имя>")
+        return
+
+    if not new_name:
+        bot.reply_to(message, "Новое имя не может быть пустым. Использование: /character_name <ID> >новое_имя>")
+        return
+
+    character_id = int(id_part)
+
+    # Проверяем, существует ли персонаж с таким ID
+    try:
+        character = get_character_by_id(character_id)
+        if not character:
+            bot.reply_to(message, f"Персонаж с ID {character_id} не найден.")
+            return
+
+        old_name = character['name']
+
+        # Обновляем имя персонажа
+        success = update_character_name(character_id, new_name)
+        if success:
+            bot.reply_to(message, f"Имя персонажа изменено:\nID: {character_id}\nБыло: {old_name}\nСтало: {new_name}")
+            logging.info(
+                f"Пользователь {message.from_user.id} изменил имя персонажа {character_id} с '{old_name}' на '{new_name}'")
+        else:
+            bot.reply_to(message, "Ошибка при изменении имени персонажа в базе данных.")
+
+    except Exception as e:
+        logging.error(f"Ошибка в команде /character_name: {e}")
+        bot.reply_to(message, "Произошла ошибка при изменении имени персонажа.")
+
 
 @bot.message_handler(commands=["ask"])
 def cmd_ask(message: types.Message) -> None:
@@ -281,6 +364,92 @@ def cmd_ask(message: types.Message) -> None:
         bot.reply_to(message, "❌ Непредвиденная ошибка.")
 
 
+@bot.message_handler(commands=["ask_model"])
+def cmd_ask_model(message: types.Message) -> None:
+    """Задать вопрос конкретной модели по ID без смены активной модели"""
+    log_message(message, "/ask_model")
+
+    if openrouter_client is None:
+        bot.reply_to(message, "❌ OpenRouter недоступен. Проверьте настройки API ключа.")
+        return
+
+    # Извлекаем аргументы команды
+    args = message.text.replace('/ask_model', '', 1).strip().split(' ', 1)
+
+    if len(args) < 2 or not args[0].isdigit():
+        bot.reply_to(message, "Использование: /ask_model <ID> <вопрос>\n\nПример: /ask_model 7 Погода в Москве")
+        return
+
+    model_id = int(args[0])
+    q = args[1].strip()
+
+    if not q:
+        bot.reply_to(message, "Использование: /ask_model <ID> <вопрос>\n\nВопрос не может быть пустым.")
+        return
+
+    # Находим модель по ID
+    target_model = get_model_by_id(model_id)
+    if not target_model:
+        bot.reply_to(message, f"❌ Модель с ID={model_id} не найдена. Используйте /models для списка моделей.")
+        return
+
+    # Строим сообщение с текущим персонажем пользователя
+    msg = _build_messages(message.from_user.id, q[:600])
+    model_key = target_model['key']
+
+    try:
+        text, ms = chat_once(msg, model=model_key, temperature=0.2, max_tokens=400)
+        out = (text or '').strip()[:4000]
+
+        # Получаем текущую активную модель для информации
+        active_model = get_active_model()
+        active_info = f" (активная: {active_model['label']})" if active_model else ""
+
+        bot.reply_to(message, f"{out}\n\n({ms} мс; модель: {target_model['label']}{active_info})")
+    except OpenRouterError as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
+    except Exception as e:
+        logging.error(f"Непредвиденная ошибка в /ask_model: {e}")
+        bot.reply_to(message, "❌ Непредвиденная ошибка.")
+
+
+@bot.message_handler(commands=["ask_random"])
+def cmd_ask_random(message: types.Message) -> None:
+    """Задать вопрос случайной LLP модели"""
+    log_message(message, "/ask_random")
+
+    if openrouter_client is None:
+        bot.reply_to(message, "❌ OpenRouter недоступен. Проверьте настройки API ключа.")
+        return
+
+    q = message.text.replace('/ask_random', '', 1).strip()
+    if not q:
+        bot.reply_to(message, "Использование: /ask_random <вопрос>")
+        return
+    q = q[:600]
+
+    # Если случайный персонаж из таблицы (не сохраняем в user_character)
+    items = list_characters()
+    if not items:
+        bot.reply_to(message, "Каталог персонажей пуст.")
+        return
+    chosen = random.choice(items)
+    character = get_character_by_id(chosen['id'])  # получаем prompt
+
+    msgs = _build_messages_for_character(character, q)
+    model_key = get_active_model()['key']
+
+    try:
+        text, ns = chat_once(msgs, model=model_key, temperature=0.2, max_tokens=400)
+        out = (text or '').strip()[:4000]
+        bot.reply_to(message, f"{out}\n\n({ns} мс; модель: {model_key}; персонаж: {character['name']})")
+    except OpenRouterError as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
+    except Exception as e:
+        logging.error(f"Непредвиденная ошибка в /ask_random: {e}")
+        bot.reply_to(message, "❌ Непредвиденная ошибка.")
+
+
 @bot.message_handler(commands=["models"])
 def cmd_models(message: types.Message) -> None:
     """Команда для получения списка моделей"""
@@ -294,6 +463,7 @@ def cmd_models(message: types.Message) -> None:
         star = '✅' if m['active'] else '  '
         lines.append(f"{star} {m['id']}. {m['label']} ({m['key']})")
     lines.append("\n🔄 Активировать: /model <ID>")
+    lines.append("❓ Задать вопрос: /ask_model <ID> <вопрос>")
     bot.reply_to(message, "\n".join(lines))
 
 
@@ -324,6 +494,69 @@ def cmd_model(message: types.Message) -> None:
         logging.info(f"Пользователь {message.from_user.id} установил активную модель: {active['label']}")
     except ValueError:
         bot.reply_to(message, "❌ Неизвестный ID модели. Сначала /models.")
+
+
+@bot.message_handler(commands=["characters"])
+def cmd_characters(message: types.Message) -> None:
+    """
+    Показать список персонажей
+    """
+    log_message(message, "/characters")
+    user_id = message.from_user.id
+    items = list_characters()
+    if not items:
+        bot.reply_to(message, "Каталог персонажей пуст.")
+        return
+
+    # Текущий персонаж пользователя
+    try:
+        current = get_user_character(user_id)["id"]
+    except Exception:
+        current = None
+
+    lines = ["Доступные персонажи:"]
+    for p in items:
+        star = "*" if current is not None and p["id"] == current else " "
+        lines.append(f"{star} {p['id']}. {p['name']}")
+    lines.append("\nВыбор: /character <ID>")
+    lines.append("Изменить имя: /character_name <ID> >новое_имя>")
+    bot.reply_to(message, "\n".join(lines))
+
+
+@bot.message_handler(commands=["character"])
+def cmd_character(message: types.Message) -> None:
+    """
+    Установить активным персонаж
+    """
+    log_message(message, "/character")
+    user_id = message.from_user.id
+    arg = message.text.replace("/character", "", 1).strip()
+
+    if not arg:
+        p = get_user_character(user_id)
+        bot.reply_to(message, f"Текущий персонаж: {p['name']} \n(смотрите: /characters, затем /character <ID>)")
+        return
+
+    if not arg.isdigit():
+        bot.reply_to(message, "Использование: /character <ID из /characters>")
+        return
+
+    try:
+        p = set_user_character(user_id, int(arg))
+        bot.reply_to(message, f"Персонаж установлен: {p['name']}")
+    except ValueError:
+        bot.reply_to(message, "Неизвестный ID персонажа. Сначала /characters.")
+
+
+@bot.message_handler(commands=["whoami"])
+def cmd_whoami(message: types.Message) -> None:
+    """
+    Показать активную модель и активного персонажа
+    """
+    log_message(message, "/whoami")
+    character = get_user_character(message.from_user.id)
+    model = get_active_model()
+    bot.reply_to(message, f"Модель: {model['label']} [{model['key']}]\nПерсонаж: {character['name']}")
 
 
 @bot.message_handler(commands=["sum"])

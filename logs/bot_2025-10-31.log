@@ -25,3 +25,9 @@
 2025-10-31 13:48:38,617 - INFO - Активная модель: GPT-3.5 Turbo (openai/gpt-3.5-turbo)
 2025-10-31 13:48:41,671 - ERROR - Infinity polling: polling exited
 2025-10-31 13:48:41,671 - ERROR - Break infinity polling
+2025-10-31 13:49:19,773 - INFO - OpenRouter клиент успешно инициализирован
+2025-10-31 13:49:20,370 - INFO - Бот запущен
+2025-10-31 13:49:20,370 - INFO - Доступно моделей: 10
+2025-10-31 13:49:20,370 - INFO - Активная модель: GPT-3.5 Turbo (openai/gpt-3.5-turbo)
+2025-10-31 13:52:19,521 - ERROR - Infinity polling: polling exited
+2025-10-31 13:52:19,521 - ERROR - Break infinity polling
